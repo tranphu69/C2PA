@@ -204,7 +204,7 @@ def process_edited_image_with_c2pa(original_image_path, edited_image_path, edito
         new_manifest = add_edit_assertion(new_manifest, editor_name, edit_type, edit_description)
         base_name = os.path.splitext(os.path.basename(edited_image_path))[0]
         timestamp = int(time.time() * 1000)
-        c2pa_edited_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_edited_signed.jpg")
+        c2pa_edited_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_edited_signed.png")
         builder = c2pa.Builder(new_manifest)
         for assertion in new_manifest.get("assertions", []):
             print(f"  📝 Assertion: {assertion.get('label')}")
@@ -272,8 +272,8 @@ def process_and_sign(image_path, author_name):
     filename = os.path.basename(image_path)
     base_name, _ = os.path.splitext(filename)
     timestamp = int(time.time() * 1000)
-    wm_output_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_wm.jpg")
-    c2pa_output_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_signed.jpg")
+    wm_output_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_wm.png")
+    c2pa_output_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_signed.png")
     try:
         bgr_img = cv2.imread(image_path)
         if bgr_img is None:
@@ -409,12 +409,12 @@ def strip_metadata_simulation(image_path):
     filename = os.path.basename(image_path)
     base_name, _ = os.path.splitext(filename)
     timestamp = int(time.time() * 1000)
-    stripped_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_stripped.jpg")
+    stripped_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_stripped.png")
     try:
         bgr_img = cv2.imread(image_path)
         if bgr_img is None:
             return None, "❌ Không đọc được ảnh!", get_history()
-        success = cv2.imwrite(stripped_path, bgr_img, [cv2.IMWRITE_JPEG_QUALITY, 100])
+        success = cv2.imwrite(stripped_path, bgr_img)
         if not success:
             return None, "❌ Lỗi lưu file!", get_history()
         log_history(
