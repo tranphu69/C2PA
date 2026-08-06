@@ -33,15 +33,11 @@ def sign_es256(data: bytes, private_key_pem: bytes) -> bytes:
     return signature
 
 def check_certificate_files():
-    print("🔍 KIỂM TRA CERTIFICATE FILES")
     cert_file = "es256_certs.pem"
     key_file = "es256_private.key"
     cert_exists = os.path.exists(cert_file)
     key_exists = os.path.exists(key_file)
-    print(f"\n✓ {cert_file}: {'✅ TỒN TẠI' if cert_exists else '❌ KHÔNG TỒN TẠI'}")
-    print(f"✓ {key_file}: {'✅ TỒN TẠI' if key_exists else '❌ KHÔNG TỒN TẠI'}")
     if not cert_exists or not key_exists:
-        print("❌ LỖI: THIẾU CERTIFICATE FILES")
         raise FileNotFoundError(
             f"Thiếu certificate files!\n"
             f"Chạy: python 01_generate_certificate.py"
@@ -51,15 +47,11 @@ def check_certificate_files():
             cert_content = f.read()
             if b"-----BEGIN CERTIFICATE-----" not in cert_content:
                 raise ValueError("Certificate format sai!")
-            print(f"  Size: {len(cert_content)} bytes")
         with open(key_file, "rb") as f:
             key_content = f.read()
             if b"-----BEGIN PRIVATE KEY-----" not in key_content:
                 raise ValueError("Private Key format sai!")
-            print(f"  Size: {len(key_content)} bytes")
-        print("\n✅ Certificate files hợp lệ!")
     except Exception as e:
-        print(f"\n❌ Lỗi: {e}")
         raise
 check_certificate_files()
 
@@ -206,8 +198,6 @@ def process_edited_image_with_c2pa(original_image_path, edited_image_path, edito
         timestamp = int(time.time() * 1000)
         c2pa_edited_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_edited_signed.png")
         builder = c2pa.Builder(new_manifest)
-        for assertion in new_manifest.get("assertions", []):
-            print(f"  📝 Assertion: {assertion.get('label')}")
         with open("es256_certs.pem", "rb") as f:
             certs = f.read()
         with open("es256_private.key", "rb") as f:
@@ -376,7 +366,7 @@ def verify_image(image_path):
             extracted_bytes = decoder.decode(bgr_img, 'dwtDctSvd')
             extracted_text = extracted_bytes.decode('utf-8', errors='ignore')
             similarity = difflib.SequenceMatcher(None, extracted_text, WATERMARK_TEXT).ratio()
-            if similarity >= 0.4 or WATERMARK_TEXT[:8] in extracted_text:
+            if similarity >= 0.9 or WATERMARK_TEXT[:8] in extracted_text:
                 wm_status = "Hợp lệ (Matched)"
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
@@ -530,4 +520,4 @@ with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(share=False)
+    demo.launch()
