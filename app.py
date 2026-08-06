@@ -158,10 +158,12 @@ def add_edit_assertion(manifest_json, editor_name, edit_type, edit_description):
             "actions": [
                 {
                     "action": "c2pa.edited",
-                    "editor": editor_name,
                     "when": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "edit_type": edit_type,
-                    "description": edit_description
+                    "softwareAgent": editor_name,
+                    "parameters": {
+                        "name": edit_type,
+                        "description": edit_description
+                    }
                 }
             ]
         }
@@ -232,30 +234,57 @@ def trace_edit_chain(image_path):
     try:
         reader = c2pa.Reader.from_file(image_path)
         manifest_store = json.loads(reader.json())
-        trace_html = "<h3 style='color: #00bfff;'>📝 Chuỗi Chỉnh Sửa (Edit Chain)</h3>"
-        for manifest_key, manifest_data in manifest_store.get("manifests", {}).items():
-            trace_html += f"<p style='color: #fff;'><b>Manifest ID:</b> {manifest_key}</p>"
+        active_manifest_id = manifest_store.get("active_manifest", "")
+        manifests = manifest_store.get("manifests", {})
+        if not manifests:
+            return "<p style='color: red;'>❌ Không tìm thấy C2PA Manifest trong file ảnh!</p>"
+        trace_html = "<h3 style='color: #00bfff;'>📝 Chuỗi Chỉnh Sửa & Khai Báo (Chain of Custody)</h3>"
+        for manifest_key, manifest_data in manifests.items():
+            is_active = (manifest_key == active_manifest_id)
+            status_badge = " (Hiện tại / Active)" if is_active else " (Thành phần gốc / Parent)"
+            trace_html += f"<div style='margin-top: 15px; font-weight: bold; color: #5bc0de;'>"
+            trace_html += f"📌 Manifest ID: {manifest_key} {status_badge}</div>"
+            author_found = "Không xác định"
             for assertion in manifest_data.get("assertions", []):
-                if assertion.get("label") == "c2pa.actions":
+                label = assertion.get("label", "")
+                if "CreativeWork" in label:
+                    try:
+                        authors = assertion.get("data", {}).get("author", [])
+                        if authors and isinstance(authors, list):
+                            author_found = authors[0].get("name", "Unknown")
+                    except Exception:
+                        pass
+            for assertion in manifest_data.get("assertions", []):
+                label = assertion.get("label", "")
+                if "c2pa.actions" in label:
                     actions = assertion.get("data", {}).get("actions", [])
-                    for i, action in enumerate(actions, 1):
-                        # Cải thiện styling với dark theme
-                        trace_html += """<div style='
+                    for i, act in enumerate(actions, 1):
+                        action_type = act.get("action", "N/A")
+                        editor = act.get("softwareAgent") or act.get("editor") or author_found
+                        when = act.get("when", "N/A")
+                        params = act.get("parameters", {})
+                        edit_type = act.get("edit_type") or params.get("name") or "N/A"
+                        description = act.get("description") or params.get("description") or "N/A"
+                        trace_html += f"""
+                        <div style='
                             border-left: 4px solid #00bfff; 
-                            padding: 12px; 
+                            padding: 10px 14px; 
                             margin: 8px 0; 
-                            background-color: #1a1a1a;
+                            background-color: #1e1e1e;
                             border-radius: 4px;
                             color: #e0e0e0;
-                        '>"""
-                        trace_html += f"<b style='color: #00ff00;'>Lần {i}:</b> {action.get('action', 'N/A')}<br>"
-                        if action.get('action') == 'c2pa.created':
-                            trace_html += "<i style='color: #ffaa00;'>Ảnh gốc được tạo</i><br>"
-                        elif action.get('action') == 'c2pa.edited':
-                            trace_html += f"<b style='color: #ff6b6b;'>Người chỉnh sửa:</b> <span style='color: #fff;'>{action.get('editor', 'Unknown')}</span><br>"
-                            trace_html += f"<b style='color: #ff6b6b;'>Thời gian:</b> <span style='color: #fff;'>{action.get('when', 'N/A')}</span><br>"
-                            trace_html += f"<b style='color: #ff6b6b;'>Loại:</b> <span style='color: #fff;'>{action.get('edit_type', 'N/A')}</span><br>"
-                            trace_html += f"<b style='color: #ff6b6b;'>Mô tả:</b> <span style='color: #fff;'>{action.get('description', 'N/A')}</span><br>"
+                            font-family: sans-serif;
+                        '>
+                            <b style='color: #00ff00;'>Hành động #{i}:</b> <code style='color: #ff79c6;'>{action_type}</code><br>
+                        """
+                        if action_type == 'c2pa.created':
+                            trace_html += f"🌱 <i style='color: #ffaa00;'>Khởi tạo ảnh gốc bởi Tác giả:</i> <b>{author_found}</b><br>"
+                            trace_html += f"🕒 <b>Thời gian:</b> {when}<br>"
+                        else:
+                            trace_html += f"👤 <b style='color: #ff6b6b;'>Người thực hiện:</b> <span style='color: #fff;'>{editor}</span><br>"
+                            trace_html += f"🕒 <b style='color: #ff6b6b;'>Thời gian:</b> <span style='color: #fff;'>{when}</span><br>"
+                            trace_html += f"🏷️ <b style='color: #ff6b6b;'>Loại chỉnh sửa:</b> <span style='color: #fff;'>{edit_type}</span><br>"
+                            trace_html += f"💬 <b style='color: #ff6b6b;'>Mô tả:</b> <span style='color: #fff;'>{description}</span><br>"
                         trace_html += "</div>"
         return trace_html
     except Exception as e:
@@ -428,10 +457,9 @@ def strip_metadata_simulation(image_path):
         return None, f"❌ Lỗi: {str(e)}", get_history()
 
 custom_css = """
-footer {visibility: hidden !important;}
-.gradio-container .sm\:flex-row {display: none !important;}
-a[href*="api"] {display: none !important;}
-#component-0 {padding-bottom: 0px !important;}
+footer {
+    display: none !important;
+}
 """
 
 with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
