@@ -236,7 +236,6 @@ def process_edited_image_with_c2pa(original_image_path, edited_image_path, edito
         error_msg = f"❌ Lỗi khi ký C2PA: {str(e)}"
         return None, error_msg, get_history()
 
-
 def trace_edit_chain(image_path):
     if image_path is None:
         return "<p style='color: orange;'>⚠️ Vui lòng tải ảnh lên để kiểm tra chuỗi chỉnh sửa.</p>"
@@ -438,7 +437,14 @@ def strip_metadata_simulation(image_path):
     except Exception as e:
         return None, f"❌ Lỗi: {str(e)}", get_history()
 
-with gr.Blocks(title="C2PA & Watermark Security Suite") as demo:
+custom_css = """
+footer {visibility: hidden !important;}
+.gradio-container .sm\:flex-row {display: none !important;}
+a[href*="api"] {display: none !important;}
+#component-0 {padding-bottom: 0px !important;}
+"""
+
+with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
     gr.Markdown("# 🛡️ Hệ Thống Bảo Vệ Bản Quyền Ảnh 2 Lớp & Theo Dõi Chỉnh Sửa")
     with gr.Tabs():
         with gr.TabItem("1. Nhúng Watermark & Ký C2PA Gốc"):
@@ -524,4 +530,4 @@ with gr.Blocks(title="C2PA & Watermark Security Suite") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=False)
