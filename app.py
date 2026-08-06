@@ -243,22 +243,30 @@ def trace_edit_chain(image_path):
     try:
         reader = c2pa.Reader.from_file(image_path)
         manifest_store = json.loads(reader.json())
-        trace_html = "<h3>📝 Chuỗi Chỉnh Sửa (Edit Chain)</h3>"
+        trace_html = "<h3 style='color: #00bfff;'>📝 Chuỗi Chỉnh Sửa (Edit Chain)</h3>"
         for manifest_key, manifest_data in manifest_store.get("manifests", {}).items():
-            trace_html += f"<p><b>Manifest ID:</b> {manifest_key}</p>"
+            trace_html += f"<p style='color: #fff;'><b>Manifest ID:</b> {manifest_key}</p>"
             for assertion in manifest_data.get("assertions", []):
                 if assertion.get("label") == "c2pa.actions":
                     actions = assertion.get("data", {}).get("actions", [])
                     for i, action in enumerate(actions, 1):
-                        trace_html += "<div style='border-left: 3px solid #007bff; padding: 10px; margin: 5px 0; background-color: #f8f9fa;'>"
-                        trace_html += f"<b>Lần {i}:</b> {action.get('action', 'N/A')}<br>"
+                        # Cải thiện styling với dark theme
+                        trace_html += """<div style='
+                            border-left: 4px solid #00bfff; 
+                            padding: 12px; 
+                            margin: 8px 0; 
+                            background-color: #1a1a1a;
+                            border-radius: 4px;
+                            color: #e0e0e0;
+                        '>"""
+                        trace_html += f"<b style='color: #00ff00;'>Lần {i}:</b> {action.get('action', 'N/A')}<br>"
                         if action.get('action') == 'c2pa.created':
-                            trace_html += "<i>Ảnh gốc được tạo</i><br>"
+                            trace_html += "<i style='color: #ffaa00;'>Ảnh gốc được tạo</i><br>"
                         elif action.get('action') == 'c2pa.edited':
-                            trace_html += f"<b>Người chỉnh sửa:</b> {action.get('editor', 'Unknown')}<br>"
-                            trace_html += f"<b>Thời gian:</b> {action.get('when', 'N/A')}<br>"
-                            trace_html += f"<b>Loại:</b> {action.get('edit_type', 'N/A')}<br>"
-                            trace_html += f"<b>Mô tả:</b> {action.get('description', 'N/A')}<br>"
+                            trace_html += f"<b style='color: #ff6b6b;'>Người chỉnh sửa:</b> <span style='color: #fff;'>{action.get('editor', 'Unknown')}</span><br>"
+                            trace_html += f"<b style='color: #ff6b6b;'>Thời gian:</b> <span style='color: #fff;'>{action.get('when', 'N/A')}</span><br>"
+                            trace_html += f"<b style='color: #ff6b6b;'>Loại:</b> <span style='color: #fff;'>{action.get('edit_type', 'N/A')}</span><br>"
+                            trace_html += f"<b style='color: #ff6b6b;'>Mô tả:</b> <span style='color: #fff;'>{action.get('description', 'N/A')}</span><br>"
                         trace_html += "</div>"
         return trace_html
     except Exception as e:
