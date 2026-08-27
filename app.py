@@ -456,6 +456,96 @@ def strip_metadata_simulation(image_path):
     except Exception as e:
         return None, f"❌ Lỗi: {str(e)}", get_history()
 
+def get_image_metadata(image_path):
+    if image_path is None:
+        return "<p style='color: orange;'>⚠️ Vui lòng tải ảnh lên!</p>"
+    try:
+        filename = os.path.basename(image_path)
+        file_size = os.path.getsize(image_path)
+        file_size_mb = file_size / (1024 * 1024)
+        metadata_html = f"""
+        <div style='background: #1a1a1a; padding: 20px; border-radius: 8px; font-family: monospace; color: #e0e0e0;'>
+        <h3 style='color: #fff; margin-top: 0;'>📋 METADATA ẢNH</h3>
+        <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #007bff; border-radius: 4px;'>
+            <b style='color: #00bfff;'>📁 Thông tin cơ bản</b><br>
+            <table style='width: 100%; margin-top: 10px; font-size: 12px; color: #e0e0e0;'>
+                <tr><td><b>Tên file:</b></td><td style='color: #28a745;'>{filename}</td></tr>
+                <tr><td><b>Kích thước:</b></td><td>{file_size_mb:.2f} MB</td></tr>
+            </table>
+        </div>
+        """
+        try:
+            bgr_img = cv2.imread(image_path)
+            if bgr_img is not None:
+                height, width = bgr_img.shape[:2]
+                channels = bgr_img.shape[2] if len(bgr_img.shape) > 2 else 1
+                color_mode = "BGR" if channels == 3 else ("BGRA" if channels == 4 else "Grayscale")
+                metadata_html += f"""
+                <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #28a745; border-radius: 4px;'>
+                    <b style='color: #28a745;'>🖼️ Thông tin ảnh</b><br>
+                    <table style='width: 100%; margin-top: 10px; font-size: 12px; color: #e0e0e0;'>
+                        <tr><td><b>Kích thước:</b></td><td>{width}px × {height}px</td></tr>
+                        <tr><td><b>Chế độ màu:</b></td><td>{color_mode}</td></tr>
+                        <tr><td><b>Số kênh:</b></td><td>{channels}</td></tr>
+                    </table>
+                </div>
+                """
+        except:
+            pass
+        try:
+            pil_img = Image.open(image_path)
+            exif_data = pil_img._getexif() if hasattr(pil_img, '_getexif') else None
+            if exif_data:
+                metadata_html += f"""
+                <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #ffc107; border-radius: 4px;'>
+                    <b style='color: #ffc107;'>📸 EXIF Metadata</b><br>
+                    <table style='width: 100%; margin-top: 10px; font-size: 11px; color: #e0e0e0;'>
+                """
+                for tag_id, value in exif_data.items():
+                    tag_name = Image.Exif.TAGS.get(tag_id, tag_id)
+                    metadata_html += f"<tr><td><b>{tag_name}:</b></td><td>{str(value)[:60]}</td></tr>"
+                metadata_html += "</table></div>"
+            else:
+                metadata_html += """
+                <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #ffc107; border-radius: 4px;'>
+                    <b style='color: #ffc107;'>📸 EXIF Metadata</b><br>
+                    <p style='color: #888;'>Ảnh này không có EXIF metadata</p>
+                </div>
+                """
+        except:
+            pass
+        try:
+            reader = c2pa.Reader.from_file(image_path)
+            manifest_store = json.loads(reader.json())
+            active_manifest = manifest_store.get("active_manifest", "")
+            metadata_html += f"""
+            <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #17a2b8; border-radius: 4px;'>
+                <b style='color: #17a2b8;'>🔐 C2PA Manifest</b><br>
+                <table style='width: 100%; margin-top: 10px; font-size: 12px; color: #e0e0e0;'>
+                    <tr><td><b>Manifest ID:</b></td><td style='color: #28a745;'>{active_manifest}</td></tr>
+            """
+            if active_manifest in manifest_store.get("manifests", {}):
+                manifest_data = manifest_store["manifests"][active_manifest]
+                metadata_html += f"<tr><td><b>Claim Generator:</b></td><td>{manifest_data.get('claim_generator', 'N/A')}</td></tr>"
+                for assertion in manifest_data.get("assertions", []):
+                    if "CreativeWork" in assertion.get("label", ""):
+                        try:
+                            author = assertion["data"]["author"][0]["name"]
+                            metadata_html += f"<tr><td><b>Tác giả:</b></td><td>{author}</td></tr>"
+                        except: pass
+            metadata_html += "</table></div>"
+        except:
+            metadata_html += """
+            <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #17a2b8; border-radius: 4px;'>
+                <b style='color: #17a2b8;'>🔐 C2PA Manifest</b><br>
+                <p style='color: #888;'>Không có C2PA Manifest hoặc đã bị gỡ</p>
+            </div>
+            """
+        metadata_html += "</div>"
+        return metadata_html
+    except Exception as e:
+        return f"<p style='color: red;'>❌ Lỗi: {str(e)}</p>"
+
 custom_css = """
 footer {
     display: none !important;
@@ -516,6 +606,13 @@ with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
         with gr.TabItem("6. Lịch Sử Hệ Thống (Database)"):
             history_table = gr.HTML(value=get_history())
             btn_refresh_hist = gr.Button("🔄 Làm Mới Lịch Sử")
+        with gr.TabItem("7. Xem Metadata"):
+            with gr.Row():
+                with gr.Column():
+                    metadata_input = gr.Image(type="filepath", label="Tải ảnh")
+                    btn_metadata = gr.Button("📋 Kiểm Tra Metadata", variant="primary")
+                with gr.Column():
+                    metadata_report = gr.HTML(label="Metadata")
     btn_sign.click(
         fn=process_and_sign,
         inputs=[img_input, author_input],
@@ -545,6 +642,11 @@ with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
         fn=get_history,
         inputs=[],
         outputs=[history_table]
+    )
+    btn_metadata.click(
+        fn=get_image_metadata,
+        inputs=[metadata_input],
+        outputs=[metadata_report]
     )
 
 if __name__ == "__main__":
