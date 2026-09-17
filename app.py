@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import secrets
+import mimetypes
 import sqlite3
 import cv2
 import numpy as np
@@ -20,8 +22,12 @@ DB_PATH = os.path.join(BASE_DIR, "history.db")
 MIN_WM_SIZE = 256
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
-WATERMARK_TEXT = "ORIGIN_SECURE_ID"
-WATERMARK_BITS_LEN = len(WATERMARK_TEXT) * 8
+
+WM_CODE_HEX_LEN = 16 
+WATERMARK_BITS_LEN = WM_CODE_HEX_LEN * 8
+
+def generate_watermark_code() -> str:
+    return secrets.token_hex(WM_CODE_HEX_LEN // 2)
 
 def sign_es256(data: bytes, private_key_pem: bytes) -> bytes:
     private_key = serialization.load_pem_private_key(
@@ -51,8 +57,9 @@ def check_certificate_files():
             key_content = f.read()
             if b"-----BEGIN PRIVATE KEY-----" not in key_content:
                 raise ValueError("Private Key format sai!")
-    except Exception as e:
+    except Exception:
         raise
+
 check_certificate_files()
 
 def init_db():
@@ -85,6 +92,14 @@ def init_db():
             final_verification_status TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS watermark_registry (
+            code TEXT PRIMARY KEY,
+            image_filename TEXT,
+            author TEXT,
+            created_timestamp TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -99,6 +114,41 @@ def log_history(filename, action, c2pa_status, watermark_status, author, details
     """, (timestamp, filename, original_file, action, c2pa_status, watermark_status, author, details, edit_type, edit_details))
     conn.commit()
     conn.close()
+
+def register_watermark_code(code, image_filename, author):
+    """[SỬA #2] Lưu ánh xạ code -> (ảnh, tác giả) ngay lúc nhúng watermark."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        INSERT OR REPLACE INTO watermark_registry (code, image_filename, author, created_timestamp)
+        VALUES (?, ?, ?, ?)
+    """, (code, image_filename, author, timestamp))
+    conn.commit()
+    conn.close()
+
+def lookup_author_by_watermark_code(extracted_code, similarity_threshold=0.85):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT author, code FROM watermark_registry WHERE code = ?",
+        (extracted_code,)
+    )
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return row[0], row[1], 1.0
+    cursor.execute("SELECT author, code FROM watermark_registry")
+    all_rows = cursor.fetchall()
+    conn.close()
+    best_author, best_code, best_ratio = None, None, 0.0
+    for author, code in all_rows:
+        ratio = difflib.SequenceMatcher(None, extracted_code, code).ratio()
+        if ratio > best_ratio:
+            best_author, best_code, best_ratio = author, code, ratio
+    if best_ratio >= similarity_threshold:
+        return best_author, best_code, best_ratio
+    return None, None, best_ratio
 
 def get_history():
     conn = sqlite3.connect(DB_PATH)
@@ -147,6 +197,7 @@ def get_history():
         """
     html += "</table>"
     return html
+
 init_db()
 
 def add_edit_assertion(manifest_json, editor_name, edit_type, edit_description):
@@ -171,35 +222,36 @@ def add_edit_assertion(manifest_json, editor_name, edit_type, edit_description):
     manifest_json["assertions"].append(edit_assertion)
     return manifest_json
 
+def guess_mime_type(path):
+    mime, _ = mimetypes.guess_type(path)
+    return mime or "image/png"
+
 def process_edited_image_with_c2pa(original_image_path, edited_image_path, editor_name, edit_type, edit_description):
     if original_image_path is None or edited_image_path is None:
         return None, "⚠️ Vui lòng cung cấp đầy đủ đường dẫn ảnh!", get_history()
     if not editor_name.strip():
         editor_name = "Anonymous Editor"
     try:
-        original_manifest = {}
-        try:
-            reader = c2pa.Reader.from_file(original_image_path)
-            manifest_store = json.loads(reader.json())
-            active_key = manifest_store.get("active_manifest")
-            if active_key:
-                original_manifest = manifest_store["manifests"][active_key]
-        except Exception:
-            original_manifest = {"claim_generator": "C2PA_App/1.0", "assertions": []}
         new_manifest = {
             "claim_generator": "C2PA_Watermark_App/1.0",
             "assertions": [],
         }
-        if "assertions" in original_manifest:
-            for assertion in original_manifest["assertions"]:
-                if "stds.schema-org.CreativeWork" in assertion.get("label", ""):
-                    new_manifest["assertions"].append(assertion)
-                    break
         new_manifest = add_edit_assertion(new_manifest, editor_name, edit_type, edit_description)
         base_name = os.path.splitext(os.path.basename(edited_image_path))[0]
         timestamp = int(time.time() * 1000)
         c2pa_edited_path = os.path.join(PROCESSED_DIR, f"{base_name}_{timestamp}_edited_signed.png")
         builder = c2pa.Builder(new_manifest)
+        ingredient_json = {
+            "title": os.path.basename(original_image_path),
+            "format": guess_mime_type(original_image_path),
+            "relationship": "parentOf",
+        }
+        with open(original_image_path, "rb") as ingredient_stream:
+            builder.add_ingredient(
+                json.dumps(ingredient_json),
+                guess_mime_type(original_image_path),
+                ingredient_stream,
+            )
         with open("es256_certs.pem", "rb") as f:
             certs = f.read()
         with open("es256_private.key", "rb") as f:
@@ -215,18 +267,47 @@ def process_edited_image_with_c2pa(original_image_path, edited_image_path, edito
             filename=os.path.basename(c2pa_edited_path),
             original_file=os.path.basename(original_image_path),
             action="Chỉnh sửa ảnh",
-            c2pa_status="Manifest cập nhật",
-            watermark_status="Watermark giữ nguyên",
+            c2pa_status="Manifest cập nhật (có ingredient liên kết ảnh gốc)",
+            watermark_status="Watermark giữ nguyên (nếu không bị phá vỡ bởi phép sửa)",
             author=editor_name,
             details=f"Mô tả: {edit_description}",
             edit_type=edit_type,
             edit_details=edit_description
         )
-        msg = f"✅ Ảnh chỉnh sửa đã được ký C2PA thành công!\nFile mới: {c2pa_edited_path}"
+        msg = (
+            f"✅ Ảnh chỉnh sửa đã được ký C2PA và liên kết provenance với ảnh gốc!\n"
+            f"File mới: {c2pa_edited_path}"
+        )
         return c2pa_edited_path, msg, get_history()
     except Exception as e:
-        error_msg = f"❌ Lỗi khi ký C2PA: {str(e)}"
+        error_msg = f"❌ Lỗi khi ký C2PA (kiểm tra lại API add_ingredient theo đúng phiên bản c2pa-python bạn cài): {str(e)}"
         return None, error_msg, get_history()
+
+def _walk_ingredients(manifest_data, manifest_store, depth, trace_html_parts):
+    ingredients = manifest_data.get("ingredients", [])
+    indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * depth
+    for ing in ingredients:
+        title = ing.get("title", "N/A")
+        relationship = ing.get("relationship", "N/A")
+        ing_hash = ing.get("hash", "N/A")
+        trace_html_parts.append(f"""
+        <div style='
+            border-left: 4px solid #9b59b6;
+            padding: 8px 12px;
+            margin: 6px 0 6px {depth * 16}px;
+            background-color: #241e2e;
+            border-radius: 4px;
+            color: #e0e0e0;
+            font-family: sans-serif;
+        '>
+            {indent}🔗 <b style='color:#c792ea;'>Ingredient (nguồn/ảnh cha):</b> {title}<br>
+            {indent}↳ <b>Quan hệ:</b> {relationship}<br>
+            {indent}↳ <b>Hash nội dung:</b> <code style='font-size:11px;'>{str(ing_hash)[:32]}</code>
+        </div>
+        """)
+        nested_manifest = ing.get("manifest") or ing.get("active_manifest")
+        if isinstance(nested_manifest, dict):
+            _walk_ingredients(nested_manifest, manifest_store, depth + 1, trace_html_parts)
 
 def trace_edit_chain(image_path):
     if image_path is None:
@@ -236,56 +317,58 @@ def trace_edit_chain(image_path):
         manifest_store = json.loads(reader.json())
         active_manifest_id = manifest_store.get("active_manifest", "")
         manifests = manifest_store.get("manifests", {})
-        if not manifests:
+        if not manifests or active_manifest_id not in manifests:
             return "<p style='color: red;'>❌ Không tìm thấy C2PA Manifest trong file ảnh!</p>"
+        active_manifest = manifests[active_manifest_id]
         trace_html = "<h3 style='color: #00bfff;'>📝 Chuỗi Chỉnh Sửa & Khai Báo (Chain of Custody)</h3>"
-        for manifest_key, manifest_data in manifests.items():
-            is_active = (manifest_key == active_manifest_id)
-            status_badge = " (Hiện tại / Active)" if is_active else " (Thành phần gốc / Parent)"
-            trace_html += f"<div style='margin-top: 15px; font-weight: bold; color: #5bc0de;'>"
-            trace_html += f"📌 Manifest ID: {manifest_key} {status_badge}</div>"
-            author_found = "Không xác định"
-            for assertion in manifest_data.get("assertions", []):
-                label = assertion.get("label", "")
-                if "CreativeWork" in label:
-                    try:
-                        authors = assertion.get("data", {}).get("author", [])
-                        if authors and isinstance(authors, list):
-                            author_found = authors[0].get("name", "Unknown")
-                    except Exception:
-                        pass
-            for assertion in manifest_data.get("assertions", []):
-                label = assertion.get("label", "")
-                if "c2pa.actions" in label:
-                    actions = assertion.get("data", {}).get("actions", [])
-                    for i, act in enumerate(actions, 1):
-                        action_type = act.get("action", "N/A")
-                        editor = act.get("softwareAgent") or act.get("editor") or author_found
-                        when = act.get("when", "N/A")
-                        params = act.get("parameters", {})
-                        edit_type = act.get("edit_type") or params.get("name") or "N/A"
-                        description = act.get("description") or params.get("description") or "N/A"
-                        trace_html += f"""
-                        <div style='
-                            border-left: 4px solid #00bfff; 
-                            padding: 10px 14px; 
-                            margin: 8px 0; 
-                            background-color: #1e1e1e;
-                            border-radius: 4px;
-                            color: #e0e0e0;
-                            font-family: sans-serif;
-                        '>
-                            <b style='color: #00ff00;'>Hành động #{i}:</b> <code style='color: #ff79c6;'>{action_type}</code><br>
-                        """
-                        if action_type == 'c2pa.created':
-                            trace_html += f"🌱 <i style='color: #ffaa00;'>Khởi tạo ảnh gốc bởi Tác giả:</i> <b>{author_found}</b><br>"
-                            trace_html += f"🕒 <b>Thời gian:</b> {when}<br>"
-                        else:
-                            trace_html += f"👤 <b style='color: #ff6b6b;'>Người thực hiện:</b> <span style='color: #fff;'>{editor}</span><br>"
-                            trace_html += f"🕒 <b style='color: #ff6b6b;'>Thời gian:</b> <span style='color: #fff;'>{when}</span><br>"
-                            trace_html += f"🏷️ <b style='color: #ff6b6b;'>Loại chỉnh sửa:</b> <span style='color: #fff;'>{edit_type}</span><br>"
-                            trace_html += f"💬 <b style='color: #ff6b6b;'>Mô tả:</b> <span style='color: #fff;'>{description}</span><br>"
-                        trace_html += "</div>"
+        trace_html += f"<div style='margin-top: 10px; font-weight: bold; color: #5bc0de;'>📌 Manifest hiện tại: {active_manifest_id}</div>"
+        author_found = "Không xác định"
+        for assertion in active_manifest.get("assertions", []):
+            if "CreativeWork" in assertion.get("label", ""):
+                try:
+                    authors = assertion.get("data", {}).get("author", [])
+                    if authors and isinstance(authors, list):
+                        author_found = authors[0].get("name", "Unknown")
+                except Exception:
+                    pass
+        for assertion in active_manifest.get("assertions", []):
+            if "c2pa.actions" in assertion.get("label", ""):
+                actions = assertion.get("data", {}).get("actions", [])
+                for i, act in enumerate(actions, 1):
+                    action_type = act.get("action", "N/A")
+                    editor = act.get("softwareAgent") or act.get("editor") or author_found
+                    when = act.get("when", "N/A")
+                    params = act.get("parameters", {})
+                    edit_type = params.get("name", "N/A")
+                    description = params.get("description", "N/A")
+                    trace_html += f"""
+                    <div style='
+                        border-left: 4px solid #00bfff;
+                        padding: 10px 14px;
+                        margin: 8px 0;
+                        background-color: #1e1e1e;
+                        border-radius: 4px;
+                        color: #e0e0e0;
+                        font-family: sans-serif;
+                    '>
+                        <b style='color: #00ff00;'>Hành động #{i}:</b> <code style='color: #ff79c6;'>{action_type}</code><br>
+                    """
+                    if action_type == "c2pa.created":
+                        trace_html += f"🌱 <i style='color: #ffaa00;'>Khởi tạo ảnh gốc bởi Tác giả:</i> <b>{author_found}</b><br>"
+                        trace_html += f"🕒 <b>Thời gian:</b> {when}<br>"
+                    else:
+                        trace_html += f"👤 <b style='color: #ff6b6b;'>Người thực hiện:</b> {editor}<br>"
+                        trace_html += f"🕒 <b style='color: #ff6b6b;'>Thời gian:</b> {when}<br>"
+                        trace_html += f"🏷️ <b style='color: #ff6b6b;'>Loại chỉnh sửa:</b> {edit_type}<br>"
+                        trace_html += f"💬 <b style='color: #ff6b6b;'>Mô tả:</b> {description}<br>"
+                    trace_html += "</div>"
+        ingredient_parts = []
+        _walk_ingredients(active_manifest, manifest_store, 0, ingredient_parts)
+        if ingredient_parts:
+            trace_html += "<h4 style='color:#c792ea; margin-top:16px;'>🔗 Chuỗi Provenance (Ingredient Chain — xác thực bằng hash/chữ ký)</h4>"
+            trace_html += "".join(ingredient_parts)
+        else:
+            trace_html += "<p style='color:#888; margin-top:12px;'>Không tìm thấy ingredient nào — đây có thể là ảnh gốc (chưa qua chỉnh sửa nối chuỗi) hoặc SDK bạn dùng trả JSON với tên field khác (hãy in manifest_store để kiểm tra).</p>"
         return trace_html
     except Exception as e:
         return f"<p style='color: red;'>❌ Không thể đọc chuỗi chỉnh sửa C2PA: {str(e)}</p>"
@@ -309,8 +392,9 @@ def process_and_sign(image_path, author_name):
             scale = MIN_WM_SIZE / min(h, w)
             new_w, new_h = int(w * scale) + 1, int(h * scale) + 1
             bgr_img = cv2.resize(bgr_img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        watermark_code = generate_watermark_code()
         encoder = WatermarkEncoder()
-        encoder.set_watermark('bytes', WATERMARK_TEXT.encode('utf-8'))
+        encoder.set_watermark('bytes', watermark_code.encode('utf-8'))
         encoded_bgr = encoder.encode(bgr_img, 'dwtDctSvd')
         cv2.imwrite(wm_output_path, encoded_bgr)
         manifest = {
@@ -346,15 +430,24 @@ def process_and_sign(image_path, author_name):
             None
         )
         builder.sign_file(signer, wm_output_path, c2pa_output_path)
+        register_watermark_code(
+            code=watermark_code,
+            image_filename=os.path.basename(c2pa_output_path),
+            author=author_name,
+        )
         log_history(
             filename=os.path.basename(c2pa_output_path),
             action="Nhúng WM & Ký C2PA",
             c2pa_status="Thành công",
-            watermark_status="Đã nhúng (DWT-DCT)",
+            watermark_status=f"Đã nhúng (DWT-DCT), mã: {watermark_code}",
             author=author_name,
-            details=f"Đã nhúng secret '{WATERMARK_TEXT}' và ký C2PA Manifest thành công."
+            details=f"Đã nhúng mã watermark riêng '{watermark_code}' và ký C2PA Manifest thành công."
         )
-        status_msg = f"✅ **Hoàn thành!**\n- Đã nhúng Watermark (`{WATERMARK_TEXT}`).\n- Đã ký C2PA Manifest tác giả **{author_name}**."
+        status_msg = (
+            f"✅ **Hoàn thành!**\n"
+            f"- Đã nhúng Watermark riêng cho ảnh này (mã: `{watermark_code}`).\n"
+            f"- Đã ký C2PA Manifest tác giả **{author_name}**."
+        )
         return c2pa_output_path, status_msg, get_history()
     except Exception as e:
         return None, f"❌ Lỗi xử lý: {str(e)}", get_history()
@@ -364,6 +457,7 @@ def verify_image(image_path):
         return "⚠️ Vui lòng tải ảnh cần xác minh!", get_history()
     filename = os.path.basename(image_path)
     c2pa_status, wm_status, author = "Bị thiếu / Xóa", "Chưa kiểm tra", "Không xác định"
+    log_detail = ""
     report = [f"### 🔍 Kết quả xác minh: `{filename}`\n"]
     c2pa_success = False
     try:
@@ -393,27 +487,19 @@ def verify_image(image_path):
             bgr_img = cv2.imread(image_path)
             decoder = WatermarkDecoder('bytes', WATERMARK_BITS_LEN)
             extracted_bytes = decoder.decode(bgr_img, 'dwtDctSvd')
-            extracted_text = extracted_bytes.decode('utf-8', errors='ignore')
-            similarity = difflib.SequenceMatcher(None, extracted_text, WATERMARK_TEXT).ratio()
-            if similarity >= 0.9 or WATERMARK_TEXT[:8] in extracted_text:
+            extracted_code = extracted_bytes.decode('utf-8', errors='ignore')
+            matched_author, matched_code, similarity = lookup_author_by_watermark_code(extracted_code)
+            if matched_author is not None:
                 wm_status = "Hợp lệ (Matched)"
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT author FROM history WHERE watermark_status LIKE ? ORDER BY timestamp DESC LIMIT 1",
-                    ("%Đã nhúng%",)
-                )
-                result = cursor.fetchone()
-                conn.close()
-                if result and result[0]:
-                    author = result[0]
+                author = matched_author
                 report.append("🟢 **[LỚP 2 - INVISIBLE WATERMARK]: THÀNH CÔNG (FALLBACK MATCH)**")
-                report.append(f"- **Watermark trích xuất:** `{extracted_text}` (Độ tương đồng: {similarity*100:.1f}%)")
+                report.append(f"- **Mã watermark trích xuất:** `{extracted_code}`")
+                report.append(f"- **Mã khớp trong registry:** `{matched_code}` (độ tương đồng: {similarity*100:.1f}%)")
                 report.append(f"- **Tác giả:** `{author}`")
             else:
                 wm_status = "Không khớp"
                 report.append("🔴 **[LỚP 2 - INVISIBLE WATERMARK]: THẤT BẠI**")
-                report.append(f"- **Nội dung đọc được:** `{extracted_text}` (Độ tương đồng quá thấp: {similarity*100:.1f}%)")
+                report.append(f"- **Mã đọc được:** `{extracted_code}` (không khớp bất kỳ ảnh nào đã đăng ký, độ tương đồng cao nhất: {similarity*100:.1f}%)")
         except Exception as e:
             wm_status = "Lỗi giải mã"
             report.append(f"🔴 **[LỚP 2 - INVISIBLE WATERMARK]: LỖI ({str(e)})**")
@@ -490,13 +576,13 @@ def get_image_metadata(image_path):
                     </table>
                 </div>
                 """
-        except:
+        except Exception:
             pass
         try:
             pil_img = Image.open(image_path)
             exif_data = pil_img._getexif() if hasattr(pil_img, '_getexif') else None
             if exif_data:
-                metadata_html += f"""
+                metadata_html += """
                 <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #ffc107; border-radius: 4px;'>
                     <b style='color: #ffc107;'>📸 EXIF Metadata</b><br>
                     <table style='width: 100%; margin-top: 10px; font-size: 11px; color: #e0e0e0;'>
@@ -512,7 +598,7 @@ def get_image_metadata(image_path):
                     <p style='color: #888;'>Ảnh này không có EXIF metadata</p>
                 </div>
                 """
-        except:
+        except Exception:
             pass
         try:
             reader = c2pa.Reader.from_file(image_path)
@@ -532,9 +618,12 @@ def get_image_metadata(image_path):
                         try:
                             author = assertion["data"]["author"][0]["name"]
                             metadata_html += f"<tr><td><b>Tác giả:</b></td><td>{author}</td></tr>"
-                        except: pass
+                        except Exception:
+                            pass
+                n_ingredients = len(manifest_data.get("ingredients", []))
+                metadata_html += f"<tr><td><b>Số ingredient (liên kết chuỗi):</b></td><td>{n_ingredients}</td></tr>"
             metadata_html += "</table></div>"
-        except:
+        except Exception:
             metadata_html += """
             <div style='background: #2a2a2a; padding: 15px; margin: 10px 0; border-left: 4px solid #17a2b8; border-radius: 4px;'>
                 <b style='color: #17a2b8;'>🔐 C2PA Manifest</b><br>
@@ -573,7 +662,7 @@ with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
                     stripped_img_output = gr.Image(label="Ảnh đã bị xóa Metadata")
                     strip_status = gr.Markdown()
         with gr.TabItem("3. Chỉnh Sửa & Cập Nhật Manifest"):
-            gr.Markdown("Xử lý ảnh khi bị sửa đổi để nối tiếp chuỗi **Chain of Custody**")
+            gr.Markdown("Xử lý ảnh khi bị sửa đổi để nối tiếp chuỗi **Chain of Custody** (dùng ingredient thật của C2PA)")
             with gr.Row():
                 with gr.Column():
                     edit_orig_input = gr.Image(type="filepath", label="1. Ảnh gốc (Đã ký C2PA)")
@@ -596,7 +685,7 @@ with gr.Blocks(title="C2PA & Watermark Security Suite", css=custom_css) as demo:
                 with gr.Column():
                     verify_report = gr.Markdown()
         with gr.TabItem("5. Chuỗi Chỉnh Sửa & Manifest"):
-            gr.Markdown("Xem toàn bộ lịch sử thay đổi của ảnh từ C2PA Manifest")
+            gr.Markdown("Xem toàn bộ chuỗi provenance (ingredient chain) của ảnh từ C2PA Manifest")
             with gr.Row():
                 with gr.Column():
                     chain_input_img = gr.Image(type="filepath", label="Tải ảnh để xem chuỗi chỉnh sửa")
