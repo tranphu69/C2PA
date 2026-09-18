@@ -1,46 +1,12 @@
-"""
-adversarial_test.py
-====================
-Kiểm thử ĐỐI KHÁNG (Adversarial Testing): mô phỏng một "kẻ tấn công" tự tạo
-cặp khóa ES256 + chứng thư TỰ KÝ (self-signed certificate) — hoàn toàn KHÔNG
-liên quan đến CA / trust-list hợp lệ nào — rồi dùng nó để ký một C2PA Manifest
-GIẢ MẠO, tự xưng tác giả là một nguồn tin uy tín (ví dụ "Reuters Official"),
-gắn vào một ảnh bất kỳ (ví dụ ảnh AI-generated).
-
-Mục đích: kiểm tra xem hệ thống xác minh hiện tại (verify_image trong
-app.py) có phân biệt được "chữ ký C2PA toàn vẹn về mặt kỹ thuật"
-với "chữ ký đến từ một nguồn đáng tin cậy" hay không.
-
-ĐÂY LÀ KIỂM THỬ BẢO MẬT TRÊN CHÍNH HỆ THỐNG CỦA BẠN, phục vụ mục đích viết
-phần "Hạn chế / Discussion" trong báo cáo nghiên cứu — không nhắm vào bên
-thứ ba nào.
-
-Cách dùng:
-    1. Đặt file này CÙNG THƯ MỤC với app.py (và es256_certs.pem, es256_private.key)
-    2. Chuẩn bị 1 ảnh bất kỳ để đóng vai "ảnh giả mạo" (có thể là ảnh AI-generated,
-       hoặc tạm dùng ảnh test bất kỳ), ví dụ fake_photo.png
-    3. Chạy:
-       python adversarial_test.py --image fake_photo.png
-
-Kết quả xuất ra thư mục adversarial_results/:
-    - attacker_private.key, attacker_certs.pem : cặp khóa "kẻ tấn công" tự tạo
-    - xxx_FAKE_signed.png                        : ảnh đã bị ký giả mạo
-    - adversarial_verify_report.txt              : report xác minh (bằng chứng chính)
-"""
-
 import os
 import time
 import datetime
-
 import c2pa
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
-
-# Import trực tiếp từ ứng dụng gốc — dùng đúng hàm ký (sign_es256) và
-# đúng hàm xác minh (verify_image) mà hệ thống thật đang dùng
 from app import sign_es256, verify_image
 
 ATTACKER_DIR = "adversarial_results"
@@ -48,24 +14,13 @@ os.makedirs(ATTACKER_DIR, exist_ok=True)
 ATTACKER_KEY_PATH = os.path.join(ATTACKER_DIR, "attacker_private.key")
 ATTACKER_CERT_PATH = os.path.join(ATTACKER_DIR, "attacker_certs.pem")
 
-
 def generate_attacker_keypair_and_cert():
-    """Tạo cặp khóa ES256 + chứng thư TỰ KÝ cho 'kẻ tấn công'.
-
-    QUAN TRỌNG: hàm này mô phỏng ĐÚNG cấu trúc certificate mà script
-    01_generate_certificate.py hợp lệ của dự án đang dùng (đã xác nhận chạy
-    được với c2pa-python trên máy bạn) — chỉ đổi Organization/Common Name
-    thành thông tin "kẻ tấn công" tự xưng. Nhờ vậy tránh được lỗi
-    "COSE error parsing certificate" do thiếu/sai extension so với bản gốc.
-    """
     private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "XX"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Unverified Self-Signed Org"),
         x509.NameAttribute(NameOID.COMMON_NAME, "Attacker Fake Cert (Not a Trusted CA)"),
     ])
-
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -107,7 +62,6 @@ def generate_attacker_keypair_and_cert():
         )
     )
     cert = builder.sign(private_key, hashes.SHA256(), default_backend())
-
     with open(ATTACKER_KEY_PATH, "wb") as f:
         f.write(private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -116,15 +70,12 @@ def generate_attacker_keypair_and_cert():
         ))
     with open(ATTACKER_CERT_PATH, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
-
     print(f"[+] Đã tạo cặp khóa 'kẻ tấn công' (self-signed, không thuộc CA nào):")
     print(f"    - {ATTACKER_KEY_PATH}")
     print(f"    - {ATTACKER_CERT_PATH}")
 
 
 def attacker_sign_fake_manifest(target_image_path, fake_author_name="Reuters Official"):
-    """Ký một Manifest C2PA GIẢ MẠO lên ảnh bất kỳ, tự xưng tác giả là
-    một nguồn tin có vẻ đáng tin cậy."""
     fake_manifest = {
         "claim_generator": "C2PA_Watermark_App/1.0",
         "assertions": [
@@ -145,23 +96,16 @@ def attacker_sign_fake_manifest(target_image_path, fake_author_name="Reuters Off
             },
         ],
     }
-
     base_name, ext = os.path.splitext(os.path.basename(target_image_path))
     if not ext:
         ext = ".png"
-    # QUAN TRỌNG: c2pa-python yêu cầu định dạng file nguồn và file đích PHẢI GIỐNG NHAU
-    # (lỗi "Source and destination file formats must match" nếu không khớp)
-    # Thêm timestamp để KHÔNG BAO GIỜ trùng tên với lần chạy trước — sign_file() sẽ báo lỗi
-    # "Destination file already exists" nếu file đích đã tồn tại từ trước (kể cả file rỗng/lỗi cũ).
     ts = int(time.time() * 1000)
     out_path = os.path.join(ATTACKER_DIR, f"{base_name}_FAKE_signed_{ts}{ext}")
-
     builder = c2pa.Builder(fake_manifest)
     with open(ATTACKER_CERT_PATH, "rb") as f:
         certs = f.read()
     with open(ATTACKER_KEY_PATH, "rb") as f:
         private_key_bytes = f.read()
-
     signer = c2pa.create_signer(
         lambda data: sign_es256(data, private_key_bytes),
         c2pa.SigningAlg.ES256,
@@ -176,25 +120,19 @@ def attacker_sign_fake_manifest(target_image_path, fake_author_name="Reuters Off
 def main(target_image_path, fake_author_name="Reuters Official"):
     print("BƯỚC 1: Tạo danh tính 'kẻ tấn công' (self-signed, ngoài trust-list)\n")
     generate_attacker_keypair_and_cert()
-
     print(f"\nBƯỚC 2: Ký Manifest C2PA giả, tự xưng tác giả là '{fake_author_name}'\n")
     fake_signed_path = attacker_sign_fake_manifest(target_image_path, fake_author_name)
-
     print("\nBƯỚC 3: Đưa ảnh giả mạo qua ĐÚNG cơ chế xác minh của hệ thống (verify_image)\n")
     report, _ = verify_image(fake_signed_path)
-
     result_path = os.path.join(ATTACKER_DIR, "adversarial_verify_report.txt")
     with open(result_path, "w", encoding="utf-8") as f:
         f.write(report)
-
     print("===== KẾT QUẢ XÁC MINH TỪ HỆ THỐNG =====")
     print(report)
     print("=" * 42)
     print(f"\n[+] Đã lưu report: {result_path}")
-
     c2pa_reported_valid = "LỚP 1 - C2PA MANIFEST]: THÀNH CÔNG" in report
     fake_author_shown = fake_author_name in report
-
     print("\n================ KẾT LUẬN ================")
     if c2pa_reported_valid and fake_author_shown:
         print("[!] PHÁT HIỆN LỖ HỔNG:")
@@ -210,7 +148,6 @@ def main(target_image_path, fake_author_name="Reuters Official"):
         print("[i] Hệ thống KHÔNG báo 'THÀNH CÔNG' với chứng thư lạ — kiểm tra lại")
         print("    report chi tiết ở trên / file report để xác nhận nguyên nhân.")
     print("=" * 44)
-
 
 if __name__ == "__main__":
     import argparse
