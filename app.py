@@ -279,7 +279,6 @@ def get_claimed_author(manifest_data):
                 return authors[0].get("name")
     return None
 
-
 def resolve_signer(manifest_data):
     sig = manifest_data.get("signature_info") or {}
     serial = sig.get("cert_serial_number")
@@ -495,7 +494,7 @@ def tamper_pixels_keep_manifest(file_path):
         raw = bytearray(zlib.decompress(b"".join(b for t, b in chunks if t == b"IDAT")))
         start_row = height // 2
         for r in range(start_row, min(start_row + 24, height)):
-            for i in range(min(160, stride - 1)):          # bỏ qua byte filter đầu mỗi dòng
+            for i in range(min(160, stride - 1)):
                 raw[r * stride + 1 + i] = (raw[r * stride + 1 + i] + 128) & 0xFF
         new_idat = zlib.compress(bytes(raw), 6)
         out = bytearray(b"\x89PNG\r\n\x1a\n")
@@ -561,7 +560,7 @@ def process_edited_image_with_c2pa(original_image_path, edited_image_path, edito
     if not editor_name:
         return None, "⚠️ Vui lòng chọn danh tính người chỉnh sửa (tạo bằng 01_generate_certificate.py).", get_history()
     try:
-        parent = analyze_credentials(original_image_path)   # kiểm tra ảnh cha trước khi nối chuỗi
+        parent = analyze_credentials(original_image_path)
         signer, cert_info = make_signer(editor_name)
         editor_cn = cert_info["cn"]
         manifest = build_edit_manifest(editor_cn, edit_type, edit_description)

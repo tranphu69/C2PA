@@ -254,7 +254,7 @@ def get_verification_audit_log():
     </tr>
     """
     for r in rows:
-        verdict = r[4] or ("TRUSTED" if r[3] else "UNKNOWN_SIGNER")   # bản ghi cũ chưa có verdict
+        verdict = r[4] or ("TRUSTED" if r[3] else "UNKNOWN_SIGNER")
         label, color = VERDICT_LABELS.get(verdict, (verdict, "#636e72"))
         serial = (str(r[5])[:12] + "...") if r[5] and r[5] != "unknown" else "-"
         html += f"""
