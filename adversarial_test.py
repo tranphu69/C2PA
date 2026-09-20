@@ -74,7 +74,6 @@ def generate_attacker_keypair_and_cert():
     print(f"    - {ATTACKER_KEY_PATH}")
     print(f"    - {ATTACKER_CERT_PATH}")
 
-
 def attacker_sign_fake_manifest(target_image_path, fake_author_name="Reuters Official"):
     fake_manifest = {
         "claim_generator": "C2PA_Watermark_App/1.0",
@@ -115,7 +114,6 @@ def attacker_sign_fake_manifest(target_image_path, fake_author_name="Reuters Off
     builder.sign_file(signer, target_image_path, out_path)
     print(f"[+] Đã tạo ảnh GIẢ MẠO đã ký: {out_path}")
     return out_path
-
 
 def main(target_image_path, fake_author_name="Reuters Official"):
     print("BƯỚC 1: Tạo danh tính 'kẻ tấn công' (self-signed, ngoài trust-list)\n")
